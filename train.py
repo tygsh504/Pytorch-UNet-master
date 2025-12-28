@@ -21,20 +21,20 @@ from utils.dice_score import dice_loss
 
 
 
-# dir_img = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Combined\Training_Ori"
-# dir_mask = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Combined\Training_GT"
+dir_img = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Combined\Training_Ori"
+dir_mask = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Combined\Training_GT"
 
-dir_img = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Bacterial Leaf Blight\Training_Ori"
-dir_mask = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Bacterial Leaf Blight\Training_GT"
+# dir_img = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Bacterial Leaf Blight\Training_Ori"
+# dir_mask = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Bacterial Leaf Blight\Training_GT"
 
-dir_checkpoint = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Code\Pytorch-UNet-master\checkpoints\BLB"
+dir_checkpoint = Path(r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Code\Pytorch-UNet-master\checkpoints\BLB")
 
 
 def train_model(
         model,
         device,
-        epochs: int = 100,
-        batch_size: int = 2,
+        epochs: int = 50,
+        batch_size: int = 4,
         learning_rate: float = 1e-5,
         val_percent: float = 0.1,
         save_checkpoint: bool = True,
@@ -56,7 +56,8 @@ def train_model(
     train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
 
     # 3. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=os.cpu_count(), pin_memory=True)
+    # loader_args = dict(batch_size=batch_size, num_workers=os.cpu_count(), pin_memory=True)
+    loader_args = dict(batch_size=batch_size, num_workers=4, pin_memory=True)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
@@ -175,7 +176,7 @@ def train_model(
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on images and target masks')
-    parser.add_argument('--epochs', '-e', metavar='E', type=int, default=100, help='Number of epochs')
+    parser.add_argument('--epochs', '-e', metavar='E', type=int, default=50, help='Number of epochs')
     parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=4, help='Batch size')
     parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=1e-5,
                         help='Learning rate', dest='lr')
