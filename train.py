@@ -27,15 +27,20 @@ dir_mask = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Combin
 # dir_img = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Bacterial Leaf Blight\Training_Ori"
 # dir_mask = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Bacterial Leaf Blight\Training_GT"
 
-dir_checkpoint = Path(r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Code\Pytorch-UNet-master\checkpoints\BLB")
+# dir_img = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Bacterial Leaf Streak\Training_Ori"
+# dir_mask = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Bacterial Leaf Streak\Training_GT"
 
+# dir_img = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Blast\Training_Ori"
+# dir_mask = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Blast\Training_GT"
+
+dir_checkpoint = Path(r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Code\Pytorch-UNet-master\checkpoints\Combined")
 
 def train_model(
         model,
         device,
         epochs: int = 50,
         batch_size: int = 4,
-        learning_rate: float = 1e-5,
+        learning_rate: float = 1e-6,
         val_percent: float = 0.1,
         save_checkpoint: bool = True,
         img_scale: float = 0.5,
@@ -85,7 +90,17 @@ def train_model(
                               lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)  # goal: maximize Dice score
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
-    criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else nn.BCEWithLogitsLoss()
+    # ------------------ NEW LOSS FUNCTION WITH 100.0 WEIGHT ------------------
+    if model.n_classes > 1:
+        # [Weight for Background, Weight for Disease]
+        # We set Disease weight to 100.0 to heavily punish missing it
+        class_weights = torch.tensor([1.0, 100.0]).to(device)
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
+    else:
+        # For single channel output
+        pos_weight = torch.tensor([100.0]).to(device)
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    # -------------------------------------------------------------------------
     global_step = 0
 
     # 5. Begin training
@@ -104,8 +119,39 @@ def train_model(
                 images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
                 true_masks = true_masks.to(device=device, dtype=torch.long)
 
+                # with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
+                #     masks_pred = model(images)
+                #     if model.n_classes == 1:
+                #         loss = criterion(masks_pred.squeeze(1), true_masks.float())
+                #         loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
+                #     else:
+                #         loss = criterion(masks_pred, true_masks)
+                #         loss += dice_loss(
+                #             F.softmax(masks_pred, dim=1).float(),
+                #             F.one_hot(true_masks, model.n_classes).permute(0, 3, 1, 2).float(),
+                #             multiclass=True
+                #         )
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
                     masks_pred = model(images)
+
+                    # ------------------ DEBUGGING CODE START ------------------
+                    # Check what the model is actually predicting
+                    if model.n_classes > 1:
+                        # For multi-class (Background vs Disease), get the class with highest probability
+                        preds = masks_pred.argmax(dim=1)
+                    else:
+                        # For binary, apply threshold
+                        preds = (torch.sigmoid(masks_pred) > 0.5)
+
+                    # Count how many pixels are predicted as "Disease" (Value 1)
+                    disease_count = preds.sum().item()
+                    total_pixels = preds.numel()
+
+                    # Print stats every 10 steps
+                    if global_step % 10 == 0:
+                        print(f"Step {global_step}: Predicted Disease Pixels: {disease_count}/{total_pixels}")
+                    # ------------------ DEBUGGING CODE END --------------------
+
                     if model.n_classes == 1:
                         loss = criterion(masks_pred.squeeze(1), true_masks.float())
                         loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
@@ -178,7 +224,7 @@ def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on images and target masks')
     parser.add_argument('--epochs', '-e', metavar='E', type=int, default=50, help='Number of epochs')
     parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=4, help='Batch size')
-    parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=1e-5,
+    parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=1e-6,
                         help='Learning rate', dest='lr')
     parser.add_argument('--load', '-f', type=str, default=False, help='Load model from a .pth file')
     parser.add_argument('--scale', '-s', type=float, default=0.5, help='Downscaling factor of the images')
