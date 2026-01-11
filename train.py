@@ -13,6 +13,12 @@ from torch import optim
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 
+# --- FIX: Set backend to 'Agg' BEFORE importing pyplot to avoid GUI errors ---
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+# -----------------------------------------------------------------------------
+
 import wandb
 from evaluate import evaluate
 from unet import UNet
@@ -20,20 +26,48 @@ from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
 
 
-
+# --- PATHS (Preserved from your original file) ---
 dir_img = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Combined\Training_Ori"
 dir_mask = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Combined\Training_GT"
-
-# dir_img = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Bacterial Leaf Blight\Training_Ori"
-# dir_mask = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Bacterial Leaf Blight\Training_GT"
-
-# dir_img = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Bacterial Leaf Streak\Training_Ori"
-# dir_mask = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Bacterial Leaf Streak\Training_GT"
-
-# dir_img = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Blast\Training_Ori"
-# dir_mask = r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Training_Dataset\Blast\Training_GT"
-
 dir_checkpoint = Path(r"C:\Users\tygsh\OneDrive\Desktop\KIE4002_FYP\Code\Pytorch-UNet-master\checkpoints\Combined")
+
+
+def plot_training_history(train_loss_history, val_score_history, save_dir):
+    """
+    Plots the Training Loss and Validation Dice Score and saves the graph.
+    """
+    try:
+        plt.figure(figsize=(10, 5))
+
+        # Plot Training Loss
+        plt.subplot(1, 2, 1)
+        plt.plot(train_loss_history, label='Train Loss', color='tab:red')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Training Loss per Epoch')
+        plt.grid(True)
+        plt.legend()
+
+        # Plot Validation Dice Score
+        # Note: We plot the history points simply as they come in sequence
+        plt.subplot(1, 2, 2)
+        plt.plot(val_score_history, label='Val Dice Score', color='tab:blue')
+        plt.xlabel('Validation Step')
+        plt.ylabel('Dice Score')
+        plt.title('Validation Dice Score')
+        plt.grid(True)
+        plt.legend()
+
+        plt.tight_layout()
+        
+        # Save the plot
+        save_path = os.path.join(save_dir, 'training_graph.png')
+        plt.savefig(save_path)
+        plt.close() # Important: Close the plot to free memory
+        logging.info(f'Graph saved to {save_path}')
+    except Exception as e:
+        logging.error(f"Could not save graph: {e}")
+
 
 def train_model(
         model,
@@ -61,7 +95,6 @@ def train_model(
     train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
 
     # 3. Create data loaders
-    # loader_args = dict(batch_size=batch_size, num_workers=os.cpu_count(), pin_memory=True)
     loader_args = dict(batch_size=batch_size, num_workers=4, pin_memory=True)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
@@ -84,24 +117,26 @@ def train_model(
         Images scaling:  {img_scale}
         Mixed Precision: {amp}
     ''')
-
+    # AdamW/RMSprop
     # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
-    optimizer = optim.RMSprop(model.parameters(),
+    optimizer = optim.AdamW(model.parameters(),
                               lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)  # goal: maximize Dice score
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
-    # ------------------ NEW LOSS FUNCTION WITH 100.0 WEIGHT ------------------
+    
+    # Loss Setup
     if model.n_classes > 1:
-        # [Weight for Background, Weight for Disease]
-        # We set Disease weight to 100.0 to heavily punish missing it
         class_weights = torch.tensor([1.0, 100.0]).to(device)
         criterion = nn.CrossEntropyLoss(weight=class_weights)
     else:
-        # For single channel output
         pos_weight = torch.tensor([100.0]).to(device)
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    # -------------------------------------------------------------------------
+    
     global_step = 0
+
+    # --- LISTS TO STORE HISTORY FOR PLOTTING ---
+    train_loss_history = []
+    val_score_history = []
 
     # 5. Begin training
     for epoch in range(1, epochs + 1):
@@ -113,45 +148,13 @@ def train_model(
 
                 assert images.shape[1] == model.n_channels, \
                     f'Network has been defined with {model.n_channels} input channels, ' \
-                    f'but loaded images have {images.shape[1]} channels. Please check that ' \
-                    'the images are loaded correctly.'
+                    f'but loaded images have {images.shape[1]} channels.'
 
                 images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
                 true_masks = true_masks.to(device=device, dtype=torch.long)
 
-                # with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
-                #     masks_pred = model(images)
-                #     if model.n_classes == 1:
-                #         loss = criterion(masks_pred.squeeze(1), true_masks.float())
-                #         loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
-                #     else:
-                #         loss = criterion(masks_pred, true_masks)
-                #         loss += dice_loss(
-                #             F.softmax(masks_pred, dim=1).float(),
-                #             F.one_hot(true_masks, model.n_classes).permute(0, 3, 1, 2).float(),
-                #             multiclass=True
-                #         )
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
                     masks_pred = model(images)
-
-                    # ------------------ DEBUGGING CODE START ------------------
-                    # Check what the model is actually predicting
-                    if model.n_classes > 1:
-                        # For multi-class (Background vs Disease), get the class with highest probability
-                        preds = masks_pred.argmax(dim=1)
-                    else:
-                        # For binary, apply threshold
-                        preds = (torch.sigmoid(masks_pred) > 0.5)
-
-                    # Count how many pixels are predicted as "Disease" (Value 1)
-                    disease_count = preds.sum().item()
-                    total_pixels = preds.numel()
-
-                    # Print stats every 10 steps
-                    if global_step % 10 == 0:
-                        print(f"Step {global_step}: Predicted Disease Pixels: {disease_count}/{total_pixels}")
-                    # ------------------ DEBUGGING CODE END --------------------
-
                     if model.n_classes == 1:
                         loss = criterion(masks_pred.squeeze(1), true_masks.float())
                         loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
@@ -173,6 +176,7 @@ def train_model(
                 pbar.update(images.shape[0])
                 global_step += 1
                 epoch_loss += loss.item()
+                
                 experiment.log({
                     'train loss': loss.item(),
                     'step': global_step,
@@ -195,6 +199,9 @@ def train_model(
                         val_score = evaluate(model, val_loader, device, amp)
                         scheduler.step(val_score)
 
+                        # --- RECORD VAL SCORE ---
+                        val_score_history.append(val_score.item() if isinstance(val_score, torch.Tensor) else val_score)
+
                         logging.info('Validation Dice score: {}'.format(val_score))
                         try:
                             experiment.log({
@@ -212,12 +219,20 @@ def train_model(
                         except:
                             pass
 
+        # --- RECORD AVERAGE EPOCH LOSS ---
+        avg_loss = epoch_loss / max(len(train_loader), 1)
+        train_loss_history.append(avg_loss)
+
         if save_checkpoint:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             state_dict['mask_values'] = dataset.mask_values
             torch.save(state_dict, str(dir_checkpoint / 'checkpoint_epoch{}.pth'.format(epoch)))
             logging.info(f'Checkpoint {epoch} saved!')
+
+            # --- PLOT GRAPH ---
+            # We pass str(dir_checkpoint) to save the PNG in the same folder as the .pth files
+            plot_training_history(train_loss_history, val_score_history, str(dir_checkpoint))
 
 
 def get_args():
@@ -244,9 +259,6 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f'Using device {device}')
 
-    # Change here to adapt to your data
-    # n_channels=3 for RGB images
-    # n_classes is the number of probabilities you want to get per pixel
     model = UNet(n_channels=3, n_classes=args.classes, bilinear=args.bilinear)
     model = model.to(memory_format=torch.channels_last)
 
